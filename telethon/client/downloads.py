@@ -316,7 +316,8 @@ class DownloadMethods:
             file: 'hints.FileLike' = None,
             *,
             thumb: 'typing.Union[int, types.TypePhotoSize]' = None,
-            progress_callback: 'hints.ProgressCallback' = None) -> typing.Optional[typing.Union[str, bytes]]:
+            progress_callback: 'hints.ProgressCallback' = None,
+            resumable: bool = False) -> typing.Optional[typing.Union[str, bytes]]:
         """
         Downloads the given media from a message object.
 
@@ -340,6 +341,9 @@ class DownloadMethods:
             progress_callback (`callable`, optional):
                 A callback function accepting two parameters:
                 ``(received bytes, total)``.
+
+            resumable (`bool`, optional):
+                Try to resume if download to an existing file.
 
             thumb (`int` | :tl:`PhotoSize`, optional):
                 Which thumbnail size from the document or photo to download,
@@ -416,11 +420,11 @@ class DownloadMethods:
 
         if isinstance(media, (types.MessageMediaPhoto, types.Photo)):
             return await self._download_photo(
-                media, file, date, thumb, progress_callback
+                media, file, date, thumb, progress_callback, resumable=resumable
             )
         elif isinstance(media, (types.MessageMediaDocument, types.Document)):
             return await self._download_document(
-                media, file, date, thumb, progress_callback, msg_data
+                media, file, date, thumb, progress_callback, msg_data, resumable=resumable
             )
         elif isinstance(media, types.MessageMediaContact) and thumb is None:
             return self._download_contact(
@@ -439,6 +443,7 @@ class DownloadMethods:
             part_size_kb: float = None,
             file_size: int = None,
             progress_callback: 'hints.ProgressCallback' = None,
+            resumable: bool = False,
             dc_id: int = None,
             key: bytes = None,
             iv: bytes = None) -> typing.Optional[bytes]:
@@ -500,6 +505,7 @@ class DownloadMethods:
             part_size_kb=part_size_kb,
             file_size=file_size,
             progress_callback=progress_callback,
+            resumable=resumable,
             dc_id=dc_id,
             key=key,
             iv=iv,
@@ -513,6 +519,7 @@ class DownloadMethods:
             part_size_kb: float = None,
             file_size: int = None,
             progress_callback: 'hints.ProgressCallback' = None,
+            resumable: bool = False,
             dc_id: int = None,
             key: bytes = None,
             iv: bytes = None,
@@ -531,19 +538,24 @@ class DownloadMethods:
         if isinstance(file, pathlib.Path):
             file = str(file.absolute())
 
+        offset = 0
         in_memory = file is None or file is bytes
         if in_memory:
             f = io.BytesIO()
         elif isinstance(file, str):
             # Ensure that we'll be able to download the media
             helpers.ensure_parent_dir_exists(file)
-            f = open(file, 'wb')
+            if resumable and os.path.exists(file):
+                f = open(file, 'ab')
+                offset = os.path.getsize(file)
+            else:
+                f = open(file, 'wb')
         else:
             f = file
 
         try:
             async for chunk in self._iter_download(
-                    input_location, request_size=part_size, dc_id=dc_id, msg_data=msg_data):
+                    input_location, offset=offset, request_size=part_size, dc_id=dc_id, msg_data=msg_data):
                 if iv and key:
                     chunk = AES.decrypt_ige(chunk, key, iv)
                 r = f.write(chunk)
@@ -805,7 +817,7 @@ class DownloadMethods:
                 f.close()
         return file
 
-    async def _download_photo(self: 'TelegramClient', photo, file, date, thumb, progress_callback):
+    async def _download_photo(self: 'TelegramClient', photo, file, date, thumb, progress_callback, resumable: bool = False):
         """Specialized version of .download_media() for photos"""
         # Determine the photo and its largest size
         if isinstance(photo, types.MessageMediaPhoto):
@@ -840,7 +852,8 @@ class DownloadMethods:
             ),
             file,
             file_size=file_size,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            resumable=resumable
         )
         return result if file is bytes else file
 
@@ -869,7 +882,7 @@ class DownloadMethods:
         return kind, possible_names
 
     async def _download_document(
-            self, document, file, date, thumb, progress_callback, msg_data):
+            self, document, file, date, thumb, progress_callback, msg_data, resumable: bool = False):
         """Specialized version of .download_media() for documents."""
         if isinstance(document, types.MessageMediaDocument):
             document = document.document
@@ -902,6 +915,7 @@ class DownloadMethods:
             file,
             file_size=size.size if size else document.size,
             progress_callback=progress_callback,
+            resumable=resumable,
             msg_data=msg_data,
         )
 
